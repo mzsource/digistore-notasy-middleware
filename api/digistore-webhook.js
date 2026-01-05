@@ -59,7 +59,7 @@ export default async function handler(req, res) {
       
       notasyPayload.data.participants = [
         {
-          email: 'seu-email-produtor@example.com', // ALTERE AQUI COM SEU EMAIL
+          email: 'support@aventuresbibliques.com', // ALTERE AQUI COM SEU EMAIL
           amount: priceInCents - affiliateAmountCents
         },
         {
