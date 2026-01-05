@@ -1,101 +1,121 @@
-// Converter preço para centavos
-const amount = digistore.net_amount || digistore.gross_amount || '0';
-const priceInCents = Math.round(parseFloat(amount.replace(',', '.')) * 100);
+// Endpoint da Notasy
+const NOTASY_ENDPOINT = 'https://api-notasy.com.br/integrations/endpoint/019b8512-bb23-7078-9c40-77eea206c511';
 
-// Extrair país do comprador (se disponível)
-const country = digistore.country || 'BR';
-
-// Definir documento baseado no país
-let document = {};
-if (country === 'BR' || country === 'Brazil') {
-  // Para Brasil: usar CPF genérico (você pode pedir pro cliente informar depois)
-  document = { cpf: '00000000000' }; // CPF fictício - ALTERE conforme necessário
-} else {
-  // Para outros países: documento internacional
-  document = { 
-    international_document: digistore.buyer_email || 'N/A'
-  };
-}
-
-// Montar payload no formato Notasy COM TODOS OS CAMPOS OBRIGATÓRIOS
-const notasyPayload = {
-  event: event,
-  data: {
-    sale: {
-      id: digistore.order_id || digistore.transaction_id || 'unknown',
-      paid_at: digistore.datetime_iso || new Date().toISOString()
-    },
-    items: [{
-      product_id: digistore.product_id || 'unknown',
-      offer_id: digistore.campaign_key || 'default',
-      product_name: digistore.product_name || 'Produto',
-      offer_name: digistore.campaign_key || 'Oferta padrão',
-      price: priceInCents,
-      currency: digistore.currency || 'BRL',
-      quantity: 1
-    }],
-    customer: {
-      name: `${digistore.buyer_first_name || ''} ${digistore.buyer_last_name || ''}`.trim() || 'Cliente',
-      email: digistore.buyer_email || 'nao-informado@example.com',
-      
-      // DOCUMENTO OBRIGATÓRIO
-      ...document,
-      
-      // ENDEREÇO OBRIGATÓRIO
-      address: {
-        zipcode: '00000000', // CEP fictício - idealmente coletar do cliente
-        uf: 'SP', // Estado fictício
-        city: 'São Paulo', // Cidade fictícia
-        district: 'Centro', // Bairro fictício
-        address: 'Rua Exemplo', // Rua fictícia
-        address_number: 'S/N', // Número fictício
-        address_complement: '' // Complemento opcional
-      }
-    }
-  }
+// Mapeamento de transaction_type da Digistore para eventos da Notasy
+const EVENT_MAP = {
+  'payment': 'order_approved',
+  'refund': 'order_refunded',
+  'chargeback': 'order_refunded',
+  'rebill_cancelled': 'order_refunded'
 };
 
-// Adicionar participants se houver afiliado
-if (digistore.affiliate_id && digistore.affiliate_id !== digistore.vendor_id) {
-  const affiliateAmount = digistore.affiliate_amount_unsigned || '0';
-  const affiliateAmountCents = Math.round(parseFloat(affiliateAmount.replace(',', '.')) * 100);
-  
-  notasyPayload.data.participants = [
-    {
-      email: 'support@aventuresbibliques.com', // ALTERE AQUI COM SEU EMAIL
-      amount: priceInCents - affiliateAmountCents
-    },
-    {
-      email: digistore.affiliate_name || 'afiliado@example.com',
-      amount: affiliateAmountCents
+export default async function handler(req, res) {
+  console.log('=== WEBHOOK RECEBIDO DA DIGISTORE24 ===');
+  console.log('Method:', req.method);
+  console.log('Query params:', req.query);
+  console.log('Body:', req.body);
+
+  const digistore = req.method === 'POST' ? req.body : req.query;
+
+  try {
+    const transactionType = digistore.transaction_type || 'payment';
+    const event = EVENT_MAP[transactionType] || 'order_approved';
+
+    const amount = digistore.net_amount || digistore.gross_amount || '0';
+    const priceInCents = Math.round(parseFloat(amount.replace(',', '.')) * 100);
+
+    const country = digistore.country || 'BR';
+    
+    let document = {};
+    if (country === 'BR' || country === 'Brazil') {
+      document = { cpf: '00000000000' };
+    } else {
+      document = { international_document: digistore.buyer_email || 'N/A' };
     }
-  ];
+
+    const notasyPayload = {
+      event: event,
+      data: {
+        sale: {
+          id: digistore.order_id || digistore.transaction_id || 'unknown',
+          paid_at: digistore.datetime_iso || new Date().toISOString()
+        },
+        items: [{
+          product_id: digistore.product_id || 'unknown',
+          offer_id: digistore.campaign_key || 'default',
+          product_name: digistore.product_name || 'Produto',
+          offer_name: digistore.campaign_key || 'Oferta padrão',
+          price: priceInCents,
+          currency: digistore.currency || 'BRL',
+          quantity: 1
+        }],
+        customer: {
+          name: `${digistore.buyer_first_name || ''} ${digistore.buyer_last_name || ''}`.trim() || 'Cliente',
+          email: digistore.buyer_email || 'nao-informado@example.com',
+          ...document,
+          address: {
+            zipcode: '00000000',
+            uf: 'SP',
+            city: 'São Paulo',
+            district: 'Centro',
+            address: 'Rua Exemplo',
+            address_number: 'S/N',
+            address_complement: ''
+          }
+        }
+      }
+    };
+
+    if (digistore.affiliate_id && digistore.affiliate_id !== digistore.vendor_id) {
+      const affiliateAmount = digistore.affiliate_amount_unsigned || '0';
+      const affiliateAmountCents = Math.round(parseFloat(affiliateAmount.replace(',', '.')) * 100);
+      
+      notasyPayload.data.participants = [
+        {
+          email: 'support@aventuresbibliques.com',
+          amount: priceInCents - affiliateAmountCents
+        },
+        {
+          email: digistore.affiliate_name || 'afiliado@example.com',
+          amount: affiliateAmountCents
+        }
+      ];
+    }
+
+    console.log('=== ENVIANDO PARA NOTASY ===');
+    console.log('Payload:', JSON.stringify(notasyPayload, null, 2));
+
+    const notasyResponse = await fetch(NOTASY_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(notasyPayload)
+    });
+
+    const notasyResult = await notasyResponse.json().catch(() => ({}));
+
+    console.log('=== RESPOSTA DA NOTASY ===');
+    console.log('Status:', notasyResponse.status);
+    console.log('Response:', notasyResult);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Dados processados com sucesso',
+      digistore_data: digistore,
+      notasy_payload: notasyPayload,
+      notasy_response: notasyResult,
+      notasy_status: notasyResponse.status
+    });
+
+  } catch (error) {
+    console.error('=== ERRO NO PROCESSAMENTO ===');
+    console.error(error);
+    
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+      digistore_data: digistore
+    });
+  }
 }
-
-console.log('=== ENVIANDO PARA NOTASY ===');
-console.log('Payload:', JSON.stringify(notasyPayload, null, 2));
-
-// Enviar para Notasy
-const notasyResponse = await fetch(NOTASY_ENDPOINT, {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify(notasyPayload)
-});
-
-const notasyResult = await notasyResponse.json().catch(() => ({}));
-
-console.log('=== RESPOSTA DA NOTASY ===');
-console.log('Status:', notasyResponse.status);
-console.log('Response:', notasyResult);
-
-// Retornar sucesso
-return res.status(200).json({
-  success: true,
-  message: 'Dados processados com sucesso',
-  digistore_data: digistore,
-  notasy_payload: notasyPayload,
-  notasy_response: notasyResult,
-  notasy_status: notasyResponse.status
-});
